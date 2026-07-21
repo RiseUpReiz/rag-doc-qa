@@ -1,0 +1,54 @@
+Retrieval-Augmented Generation: An Overview
+
+Retrieval-augmented generation, or RAG, is a technique for grounding large language
+model outputs in external knowledge rather than relying solely on what the model
+learned during training. A standard language model answers questions using only the
+patterns baked into its weights, which means it can be confidently wrong about facts,
+recent events, or information specific to a private document collection. RAG solves
+this by giving the model access to a search step before it generates an answer.
+
+The typical RAG pipeline has four stages. First, documents are ingested: PDFs, text
+files, web pages, or other sources are loaded and split into smaller chunks, usually
+a few hundred to a couple thousand characters each. Chunking matters because language
+models have a limited context window, and retrieval works better over focused passages
+than over entire documents. Each chunk usually keeps metadata about where it came
+from, such as the source filename and page number, so answers can be traced back to
+their origin.
+
+Second, each chunk is converted into a vector embedding, a list of floating point
+numbers that represents the chunk's meaning in a high-dimensional space. Embedding
+models are trained so that chunks with similar meaning end up close together in this
+space, even if they do not share exact words. This is what allows semantic search:
+a query about "canceling a subscription" can retrieve a chunk about "how to end your
+plan" even though the wording is completely different.
+
+Third, the embeddings are stored in a vector database, sometimes called a vector
+store. Vector stores are optimized for a particular kind of query: given a new vector,
+find the stored vectors that are closest to it, usually using cosine similarity or
+Euclidean distance. Chroma is a popular open-source vector store for prototypes and
+small to medium projects because it is easy to run locally and persists data to disk
+without needing a separate server process.
+
+Fourth, at query time, the user's question is embedded using the same embedding model,
+the vector store is searched for the most similar chunks, and those chunks are
+inserted into a prompt alongside the original question. The language model then
+generates an answer using both its own knowledge and the retrieved context, and a
+well-designed prompt will instruct it to prefer the retrieved context and to say when
+it does not know something rather than guessing.
+
+RAG is popular in production systems because it is cheaper and faster to update than
+retraining or fine-tuning a model. If a company's internal documentation changes, the
+fix is to re-ingest the updated documents, not to retrain a multi-billion parameter
+model. It also improves trust: because retrieved chunks carry source metadata, an
+application can show users exactly which document and page an answer came from,
+which matters a great deal in domains like law, medicine, and customer support where
+unverifiable answers are a serious liability.
+
+Choosing a good chunk size is one of the more important tuning decisions in a RAG
+system. Chunks that are too small lose surrounding context and can be retrieved
+without enough information to answer a question fully. Chunks that are too large
+dilute the embedding, mixing multiple topics into one vector and making semantic
+search less precise, while also wasting space in the model's context window. A
+common starting point is a few hundred to about a thousand characters per chunk,
+with a small overlap between consecutive chunks so that a sentence split across a
+chunk boundary is not lost entirely from either chunk.
