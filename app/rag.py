@@ -19,6 +19,14 @@ PROMPT = ChatPromptTemplate.from_messages(
 def format_context(docs) -> str:
         return "\n\n".join(doc.page_content for doc in docs)
 
+def extract_text(response) -> str:
+    """Pull plain text out of a model response, whether it's a string or content parts."""
+    content = response.content
+    if isinstance(content, str):
+        return content
+    parts = [part.get("text", "") for part in content if isinstance(part, dict)]
+    return "".join(parts).strip()
+
 def answer_question(question: str, k: int | None = None) -> dict:
     """Retrive relevant chunks, ground an answer in them, and return sources."""
     store = load_index()
@@ -35,7 +43,7 @@ def answer_question(question: str, k: int | None = None) -> dict:
         if source not in sources:
             sources.append(source)
 
-    return {"answer": response.content, "sources": sources}
+    return {"answer": extract_text(response), "sources": sources}
 
 if __name__ == "__main__":
     import sys
