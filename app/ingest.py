@@ -47,6 +47,11 @@ def chunk_documents(documents: list[Document]) -> list[Document]:
     return splitter.split_documents(documents)
 
 
+def ingest(source_dir: Path = DATA_DIR) -> list[Document]:
+    """Load every document in source_dir and split it into embeddable chunks."""
+    return chunk_documents(load_documents(source_dir))
+
+
 if __name__ == "__main__":
     documents = load_documents(DATA_DIR)
     chunks = chunk_documents(documents)

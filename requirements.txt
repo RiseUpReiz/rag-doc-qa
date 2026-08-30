@@ -5,3 +5,5 @@ python-dotenv==1.2.2
 pypdf==6.14.2
 langchain-core==1.5.0
 langchain-text-splitters==1.1.2
+langchain-google-genai==4.3.5
+langchain-chroma==1.1.0
