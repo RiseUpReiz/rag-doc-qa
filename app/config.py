@@ -19,5 +19,11 @@ class Settings(BaseSettings):
     persist_dir: str = "storage"
     collection_name: str = "documents"
 
+    # LLM settings
+    llm_provider: str = "google"
+    llm_model: str = "gemini-3.6-flash"
+    temperature: float = 0.0
+    retriever_k: int = 4
+
 
 settings = Settings()
