@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.response import RedirectResponse
+from fastapi.responses import RedirectResponse
 
 from app.config import settings
 from app.rag import answer_question
