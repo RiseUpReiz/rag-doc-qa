@@ -1,10 +1,24 @@
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 
 from app.config import settings
 from app.rag import answer_question
 from app.schemas import AskRequest, AskResponse
+from app.vectorstore import build_index
 
-app = FastAPI(title=settings.app_name)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for FastAPI app."""
+    index_path = Path(settings.index_path)
+    if not Path(settings.persist_dir).exists():
+        build_index()
+    yield
+
+    
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 
 @app.get("/health")
