@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.response import RedirectResponse
 
 from app.config import settings
 from app.rag import answer_question
@@ -17,9 +18,13 @@ async def lifespan(app: FastAPI):
         build_index()
     yield
 
-    
+
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
+@app.get("/", include_in_schema=False)
+def root():
+    """Send visitors to the interactive API docs."""
+    return RedirectResponse(url="/docs")
 
 @app.get("/health")
 def health() -> dict:
