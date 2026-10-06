@@ -9,6 +9,7 @@ REFUSAL_MARKERS = (
     "not in the",
     "no information",
     "not mentioned",
+    "no mention",
     "not provided",
     "not specified",
     "cannot find",

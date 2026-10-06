@@ -59,6 +59,15 @@ def test_refusal_detection():
     assert not looks_like_refusal("Vendors are paid on net 45 terms.")
 
 
+def test_no_mention_phrasing_is_a_refusal():
+    answer = (
+        "Based on the provided documents, there is no mention of who the CEO of "
+        "Halden Marine Systems is."
+    )
+    assert looks_like_refusal(answer)
+    assert score_case({"expect_refusal": True}, answer).passed
+
+
 def test_status_classification():
     assert case_status(Score(passed=True)) == PASS
     assert case_status(Score(passed=False, reasons=["missing expected content"])) == FAIL
