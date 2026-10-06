@@ -50,6 +50,11 @@ def load_cases(path: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def load_all_cases(paths: list[Path]) -> list[dict]:
+    """Load and concatenate several cases files (case ids are unique across suites)."""
+    return [case for path in paths for case in load_cases(path)]
+
+
 def build_eval_store(corpus_dir: Path) -> Chroma:
     """Index the eval corpus in memory, separate from the app's real index."""
     chunks = chunk_documents(load_documents(corpus_dir))
@@ -145,14 +150,14 @@ def rescore_file(
     results_path: Path,
     out_dir: Path,
     judge: bool = False,
-    cases_path: Path | None = None,
+    cases_paths: list[Path] | None = None,
     delay: float = 0.0,
     llm=None,
 ) -> tuple[Path, list[dict]]:
     """Re-grade a saved results file and write a new report, without calling the system under test."""
     results = rescore_results(load_cases(results_path))
-    if cases_path:
-        results = backfill_expected_behavior(results, load_cases(cases_path))
+    if cases_paths:
+        results = backfill_expected_behavior(results, load_all_cases(cases_paths))
     if judge:
         results = apply_judge(results, delay=delay, llm=llm)
         note = f"Rescored from {results_path.name} (no new answers generated; judge re-run)"
@@ -301,9 +306,9 @@ def write_report(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cases", type=Path,
-                        help="cases file (default: evals/cases.jsonl); with --rescore, the source of"
-                             " expected_behavior for saved results that lack it")
+    parser.add_argument("--cases", type=Path, nargs="+",
+                        help="cases file (default: evals/cases.jsonl); with --rescore, one or more files"
+                             " to take expected_behavior from for saved results that lack it")
     parser.add_argument("--corpus", type=Path, default=EVALS_DIR / "corpus")
     parser.add_argument("--out", type=Path, default=EVALS_DIR / "reports")
     parser.add_argument("--delay", type=float, default=4.0, help="seconds between calls (free-tier rate limits)")
@@ -319,12 +324,14 @@ def main() -> None:
 
     if args.rescore:
         report_path, results = rescore_file(
-            args.rescore, args.out, judge=args.judge, cases_path=args.cases, delay=args.delay
+            args.rescore, args.out, judge=args.judge, cases_paths=args.cases, delay=args.delay
         )
         print(f"{summary_line([r['status'] for r in results])}. Report: {report_path}")
         return
 
-    cases_path = args.cases or EVALS_DIR / "cases.jsonl"
+    if args.cases and len(args.cases) > 1:
+        parser.error("--cases takes a single file unless used with --rescore")
+    cases_path = args.cases[0] if args.cases else EVALS_DIR / "cases.jsonl"
     cases = load_cases(cases_path)
     if args.only:
         cases = [c for c in cases if c["category"] == args.only]

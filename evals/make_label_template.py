@@ -12,7 +12,7 @@ import argparse
 import json
 from pathlib import Path
 
-from evals.run_eval import backfill_expected_behavior, load_cases
+from evals.run_eval import backfill_expected_behavior, load_all_cases, load_cases
 from evals.scoring import ERROR
 
 DEFAULT_OUT = Path(__file__).parent / "judge_validation" / "labels.jsonl"
@@ -35,7 +35,8 @@ def label_rows(results: list[dict], source: str) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("results", type=Path, nargs="+", help="results-*.jsonl files from evals/reports")
-    parser.add_argument("--cases", type=Path, help="cases file to fill in expected_behavior for results that lack it")
+    parser.add_argument("--cases", type=Path, nargs="+", default=[],
+                        help="cases file(s) to fill in expected_behavior for results that lack it")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--force", action="store_true", help="overwrite an existing labels file")
     args = parser.parse_args()
@@ -43,7 +44,7 @@ def main() -> None:
     if args.out.exists() and not args.force:
         parser.error(f"{args.out} already exists and may contain labels; pass --force to overwrite it")
 
-    cases = load_cases(args.cases) if args.cases else []
+    cases = load_all_cases(args.cases)
     rows = []
     for path in args.results:
         results = backfill_expected_behavior(load_cases(path), cases)

@@ -1,6 +1,7 @@
 """LLM-as-judge grading of answers against a case's expected_behavior."""
 import json
 import re
+import secrets
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -14,7 +15,8 @@ JUDGE_ERROR = "JUDGE_ERROR"
 PROMPT_PATH = Path(__file__).parent / "judge_prompt.txt"
 QUOTA_REASON = "not judged: daily quota exhausted"
 
-_PLACEHOLDER = re.compile(r"\{(question|expected_behavior|answer)\}")
+_FIELDS = ("question", "expected_behavior", "answer")
+_PLACEHOLDER = re.compile(r"\{((?:question|expected_behavior|answer)(?:_tag)?)\}")
 _FENCED = re.compile(r"^```[a-zA-Z]*\s*\n?(.*?)\n?\s*```$", re.DOTALL)
 
 
@@ -24,13 +26,17 @@ class Judgement:
     reasoning: str
 
 
-def build_prompt(question: str, expected_behavior: str, answer: str) -> str:
+def build_prompt(question: str, expected_behavior: str, answer: str, token: str | None = None) -> str:
     """Fill the judge template in a single pass.
 
+    Each call wraps the fields in tags with a random suffix (e.g. <answer_3f9a1c2e>), so an
+    answer containing "</answer>" can't close its own tag and smuggle text outside it.
     One pass means text inside the question or answer that happens to look like a
     placeholder (e.g. "{expected_behavior}") is never substituted itself.
     """
+    token = token or secrets.token_hex(4)
     values = {"question": question, "expected_behavior": expected_behavior, "answer": answer}
+    values |= {f"{field}_tag": f"{field}_{token}" for field in _FIELDS}
     template = PROMPT_PATH.read_text(encoding="utf-8")
     return _PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
 
