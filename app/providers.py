@@ -24,4 +24,18 @@ def get_llm():
             temperature=settings.temperature,
             api_key=settings.google_api_key,
         )
-    raise ValueError(f"Unsupported LLM provider: {settings.llm_provider!r}")        
+    raise ValueError(f"Unsupported LLM provider: {settings.llm_provider!r}")
+
+def get_judge_llm():
+    """Get the eval judge LLM based on the configured judge provider and model."""
+    if not settings.judge_model:
+        raise ValueError("Judge model is not set in the environment. Add JUDGE_MODEL to your .env file")
+    if settings.judge_provider == "google":
+        if not settings.google_api_key:
+            raise ValueError("Google API key is not set in the environment. Add to your .env file")
+        return ChatGoogleGenerativeAI(
+            model=settings.judge_model,
+            temperature=settings.temperature,
+            api_key=settings.google_api_key,
+        )
+    raise ValueError(f"Unsupported judge provider: {settings.judge_provider!r}")

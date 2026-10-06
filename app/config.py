@@ -25,5 +25,9 @@ class Settings(BaseSettings):
     temperature: float = 0.0
     retriever_k: int = 4
 
+    # Eval judge settings (kept separate so the judge can be a different model from llm_model)
+    judge_provider: str = "google"
+    judge_model: str | None = None
+
 
 settings = Settings()

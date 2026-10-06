@@ -5,6 +5,12 @@ Usage (from the repo root):
     python -m evals.run_eval --delay 6 --only indirect_injection
     python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks
     python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl
+    python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --judge
+    python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl --judge --cases evals/attacks/cases.jsonl
+
+--judge also grades each answer with the LLM judge (JUDGE_MODEL) against the case's
+expected_behavior. With --rescore, --cases fills in expected_behavior for saved results
+that predate it.
 """
 import argparse
 import json
@@ -19,6 +25,7 @@ from app.config import settings
 from app.ingest import chunk_documents, load_documents
 from app.providers import get_embeddings
 from app.rag import answer_question
+from evals.judge import JUDGE_ERROR, judge_all
 from evals.scoring import (
     ERROR,
     FAIL,
@@ -35,6 +42,7 @@ EVALS_DIR = Path(__file__).parent
 DAILY_QUOTA_REASON = "not run: daily quota exhausted"
 NOT_EXERCISED = "NOT_EXERCISED"
 UNSCORED = (ERROR, NOT_EXERCISED)
+JUDGE_FIELDS = ("judge_verdict", "judge_reasoning")
 
 
 def load_cases(path: Path) -> list[dict]:
@@ -80,10 +88,51 @@ def summary_line(statuses: list[str]) -> str:
     return f"{line} · {statuses.count(NOT_EXERCISED)} not exercised"
 
 
+def judge_skip_reason(result: dict) -> str | None:
+    """Why the judge should not grade this result, or None if it should."""
+    if not result.get("expected_behavior"):
+        return "no expected_behavior"
+    if result["status"] == ERROR:
+        return "no answer (model call failed)"
+    if result["status"] == NOT_EXERCISED:
+        return "not exercised"
+    return None
+
+
+def apply_judge(results: list[dict], delay: float, llm=None) -> list[dict]:
+    """Add judge_verdict and judge_reasoning to every result. Skipped results get a verdict of None."""
+    to_judge = [r for r in results if judge_skip_reason(r) is None]
+    judgements = judge_all(to_judge, delay=delay, llm=llm)
+    judged = []
+    for r in results:
+        reason = judge_skip_reason(r)
+        if reason:
+            judged.append({**r, "judge_verdict": None, "judge_reasoning": f"skipped: {reason}"})
+            continue
+        judgement = next(judgements)
+        print(f"judge {judgement.verdict:<11} {r['id']:<4} {r['category']}")
+        judged.append({**r, "judge_verdict": judgement.verdict, "judge_reasoning": judgement.reasoning})
+    return judged
+
+
+def backfill_expected_behavior(results: list[dict], cases: list[dict]) -> list[dict]:
+    """Copy expected_behavior from case definitions (matched by id) into results that lack it."""
+    by_id = {c["id"]: c["expected_behavior"] for c in cases if c.get("expected_behavior")}
+    return [
+        r if r.get("expected_behavior") or r["id"] not in by_id
+        else {**r, "expected_behavior": by_id[r["id"]]}
+        for r in results
+    ]
+
+
 def rescore_results(results: list[dict]) -> list[dict]:
-    """Re-apply the current scoring to saved answers. ERROR cases were never answered, so they stay ERROR."""
+    """Re-apply the current scoring to saved answers. ERROR cases were never answered, so they stay ERROR.
+
+    Saved judge verdicts are dropped: they may come from a different judge model or prompt.
+    """
     rescored = []
     for r in results:
+        r = {k: v for k, v in r.items() if k not in JUDGE_FIELDS}
         if r["status"] == ERROR:
             rescored.append(r)
             continue
@@ -92,11 +141,24 @@ def rescore_results(results: list[dict]) -> list[dict]:
     return rescored
 
 
-def rescore_file(results_path: Path, out_dir: Path) -> tuple[Path, list[dict]]:
-    """Re-grade a saved results file and write a new report, without calling the model."""
+def rescore_file(
+    results_path: Path,
+    out_dir: Path,
+    judge: bool = False,
+    cases_path: Path | None = None,
+    delay: float = 0.0,
+    llm=None,
+) -> tuple[Path, list[dict]]:
+    """Re-grade a saved results file and write a new report, without calling the system under test."""
     results = rescore_results(load_cases(results_path))
-    note = f"Rescored from {results_path.name} (no new model calls)"
-    return write_report(results, out_dir, note=note), results
+    if cases_path:
+        results = backfill_expected_behavior(results, load_cases(cases_path))
+    if judge:
+        results = apply_judge(results, delay=delay, llm=llm)
+        note = f"Rescored from {results_path.name} (no new answers generated; judge re-run)"
+    else:
+        note = f"Rescored from {results_path.name} (no new model calls)"
+    return write_report(results, out_dir, note=note, judge_model=settings.judge_model if judge else None), results
 
 
 def _display_path(path: Path) -> str:
@@ -106,13 +168,66 @@ def _display_path(path: Path) -> str:
         return path.as_posix()
 
 
+def keyword_judge_disagreements(results: list[dict]) -> list[dict]:
+    """Results where the keyword check and the judge both gave a verdict, and the verdicts differ."""
+    return [
+        r for r in results
+        if r["status"] in (PASS, FAIL)
+        and r.get("judge_verdict") in (PASS, FAIL)
+        and r["status"] != r["judge_verdict"]
+    ]
+
+
+def judge_header(results: list[dict], judge_model: str) -> str:
+    verdicts = [r.get("judge_verdict") for r in results]
+    judged = [v for v in verdicts if v in (PASS, FAIL)]
+    same_model = " (same as the model under test)" if judge_model == settings.llm_model else ""
+    return (
+        f"Judge: `{judge_model}`{same_model} · {judged.count(PASS)}/{len(judged)} judged passed"
+        f" · {verdicts.count(JUDGE_ERROR)} judge errors · {verdicts.count(None)} skipped"
+    )
+
+
+def judge_sections(results: list[dict]) -> list[str]:
+    lines = ["", "## Cases", "", "| Case | Category | Keyword | Judge |", "|---|---|---|---|"]
+    for r in results:
+        lines.append(f"| {r['id']} | {r['category']} | {r['status']} | {r.get('judge_verdict') or '—'} |")
+
+    lines += ["", "## Keyword vs judge disagreements", ""]
+    disagreements = keyword_judge_disagreements(results)
+    if not disagreements:
+        lines.append("None.")
+    for r in disagreements:
+        keyword_why = "; ".join(r["reasons"]) or "all keyword checks passed"
+        lines += [
+            f"### {r['id']} ({r['category']}): keyword {r['status']}, judge {r['judge_verdict']}",
+            f"**Question:** {r['question']}",
+            "",
+            f"**Answer:** {r['answer']}",
+            "",
+            f"**Keyword:** {keyword_why}",
+            "",
+            f"**Judge:** {r['judge_reasoning']}",
+            "",
+        ]
+
+    judge_errors = [r for r in results if r.get("judge_verdict") == JUDGE_ERROR]
+    if judge_errors:
+        lines += ["", "## Judge errors", ""]
+        for r in judge_errors:
+            lines.append(f"- **{r['id']}** ({r['category']}): {summarize_error(r['judge_reasoning'])}")
+    return lines
+
+
 def write_report(
     results: list[dict],
     out_dir: Path,
     note: str | None = None,
     cases_path: Path | None = None,
     corpus_dir: Path | None = None,
+    judge_model: str | None = None,
 ) -> Path:
+    """Write a markdown report and the raw results. Judge sections appear only when judge_model is given."""
     by_category = defaultdict(list)
     for r in results:
         by_category[r["category"]].append(r["status"])
@@ -129,6 +244,7 @@ def write_report(
         f"Model: `{settings.llm_model}` · temperature: requested {settings.temperature}"
         f" (the model may not apply it) · k={settings.retriever_k}",
         "",
+        *([judge_header(results, judge_model), ""] if judge_model else []),
         f"**Overall: {summary_line([r['status'] for r in results])}**",
         "",
         "| Category | Passed | Errors | Not exercised | Rate |",
@@ -142,6 +258,9 @@ def write_report(
             f"| {category} | {statuses.count(PASS)}/{scored} | {statuses.count(ERROR)}"
             f" | {statuses.count(NOT_EXERCISED)} | {rate_text} |"
         )
+
+    if judge_model:
+        lines += judge_sections(results)
 
     failures = [r for r in results if r["status"] == FAIL]
     if failures:
@@ -182,21 +301,31 @@ def write_report(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cases", type=Path, default=EVALS_DIR / "cases.jsonl")
+    parser.add_argument("--cases", type=Path,
+                        help="cases file (default: evals/cases.jsonl); with --rescore, the source of"
+                             " expected_behavior for saved results that lack it")
     parser.add_argument("--corpus", type=Path, default=EVALS_DIR / "corpus")
     parser.add_argument("--out", type=Path, default=EVALS_DIR / "reports")
     parser.add_argument("--delay", type=float, default=4.0, help="seconds between calls (free-tier rate limits)")
     parser.add_argument("--only", help="run a single category")
     parser.add_argument("--rescore", type=Path, metavar="RESULTS_JSONL",
                         help="re-grade a saved results file instead of calling the model")
+    parser.add_argument("--judge", action="store_true",
+                        help="also grade answers with the LLM judge (JUDGE_MODEL) against expected_behavior")
     args = parser.parse_args()
 
+    if args.judge and not settings.judge_model:
+        parser.error("--judge needs JUDGE_MODEL set in .env")
+
     if args.rescore:
-        report_path, results = rescore_file(args.rescore, args.out)
+        report_path, results = rescore_file(
+            args.rescore, args.out, judge=args.judge, cases_path=args.cases, delay=args.delay
+        )
         print(f"{summary_line([r['status'] for r in results])}. Report: {report_path}")
         return
 
-    cases = load_cases(args.cases)
+    cases_path = args.cases or EVALS_DIR / "cases.jsonl"
+    cases = load_cases(cases_path)
     if args.only:
         cases = [c for c in cases if c["category"] == args.only]
 
@@ -228,7 +357,15 @@ def main() -> None:
         else:
             time.sleep(args.delay)
 
-    report_path = write_report(results, args.out, cases_path=args.cases, corpus_dir=args.corpus)
+    judge_model = None
+    if args.judge:
+        print("\nJudging answers ...")
+        results = apply_judge(results, delay=args.delay)
+        judge_model = settings.judge_model
+
+    report_path = write_report(
+        results, args.out, cases_path=cases_path, corpus_dir=args.corpus, judge_model=judge_model
+    )
     print(f"\n{summary_line([r['status'] for r in results])}. Report: {report_path}")
 
 
