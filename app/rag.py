@@ -27,9 +27,10 @@ def extract_text(response) -> str:
     parts = [part.get("text", "") for part in content if isinstance(part, dict)]
     return "".join(parts).strip()
 
-def answer_question(question: str, k: int | None = None) -> dict:
-    """Retrive relevant chunks, ground an answer in them, and return sources."""
-    store = load_index()
+def answer_question(question: str, k: int | None = None, store=None) -> dict:
+    """Retrieve relevant chunks, ground an answer in them, and return sources."""
+    if store is None:
+        store = load_index()
     docs = store.similarity_search(question, k=k or settings.retriever_k)
 
     prompt = PROMPT.invoke({"context": format_context(docs), "question": question})
