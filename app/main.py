@@ -13,7 +13,6 @@ from app.vectorstore import build_index
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for FastAPI app."""
-    index_path = Path(settings.index_path)
     if not Path(settings.persist_dir).exists():
         build_index()
     yield
