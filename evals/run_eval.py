@@ -9,8 +9,8 @@ Usage (from the repo root):
     python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl --judge --cases evals/attacks/cases.jsonl
 
 --judge also grades each answer with the LLM judge (JUDGE_MODEL) against the case's
-expected_behavior. With --rescore, --cases fills in expected_behavior for saved results
-that predate it.
+expected_behavior. With --rescore, --cases re-grades saved answers against the current
+case definitions in those files instead of the ones saved with the results.
 """
 import argparse
 import json
@@ -43,6 +43,10 @@ DAILY_QUOTA_REASON = "not run: daily quota exhausted"
 NOT_EXERCISED = "NOT_EXERCISED"
 UNSCORED = (ERROR, NOT_EXERCISED)
 JUDGE_FIELDS = ("judge_verdict", "judge_reasoning")
+CASE_DEFINITION_FIELDS = (
+    "must_contain_any", "must_not_contain", "expect_refusal", "expected_behavior",
+    "poison_source", "category", "rationale",
+)
 
 
 def load_cases(path: Path) -> list[dict]:
@@ -130,6 +134,27 @@ def backfill_expected_behavior(results: list[dict], cases: list[dict]) -> list[d
     ]
 
 
+def refresh_case_definitions(results: list[dict], cases: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Replace each saved result's case definition with the current one (matched by id).
+
+    The saved question, answer and sources are kept. A field the current case no longer has is
+    removed, so an old check can't linger. Results whose id isn't in the cases keep their saved
+    definition and are returned separately as the second value.
+    """
+    by_id = {c["id"]: c for c in cases}
+    refreshed, not_found = [], []
+    for r in results:
+        case = by_id.get(r["id"])
+        if case is None:
+            refreshed.append(r)
+            not_found.append(r)
+            continue
+        kept = {k: v for k, v in r.items() if k not in CASE_DEFINITION_FIELDS}
+        current = {k: v for k, v in case.items() if k in CASE_DEFINITION_FIELDS}
+        refreshed.append({**kept, **current})
+    return refreshed, not_found
+
+
 def rescore_results(results: list[dict]) -> list[dict]:
     """Re-apply the current scoring to saved answers. ERROR cases were never answered, so they stay ERROR.
 
@@ -154,16 +179,26 @@ def rescore_file(
     delay: float = 0.0,
     llm=None,
 ) -> tuple[Path, list[dict]]:
-    """Re-grade a saved results file and write a new report, without calling the system under test."""
-    results = rescore_results(load_cases(results_path))
+    """Re-grade a saved results file and write a new report, without calling the system under test.
+
+    With cases_paths, case definitions are refreshed from those files before grading; otherwise
+    the definitions saved in the results file are used.
+    """
+    results = load_cases(results_path)
+    not_found = None
     if cases_paths:
-        results = backfill_expected_behavior(results, load_all_cases(cases_paths))
+        results, not_found = refresh_case_definitions(results, load_all_cases(cases_paths))
+    results = rescore_results(results)
     if judge:
         results = apply_judge(results, delay=delay, llm=llm)
         note = f"Rescored from {results_path.name} (no new answers generated; judge re-run)"
     else:
         note = f"Rescored from {results_path.name} (no new model calls)"
-    return write_report(results, out_dir, note=note, judge_model=settings.judge_model if judge else None), results
+    report_path = write_report(
+        results, out_dir, note=note, judge_model=settings.judge_model if judge else None,
+        definitions_from=cases_paths, definitions_not_found=not_found,
+    )
+    return report_path, results
 
 
 def _display_path(path: Path) -> str:
@@ -231,8 +266,15 @@ def write_report(
     cases_path: Path | None = None,
     corpus_dir: Path | None = None,
     judge_model: str | None = None,
+    definitions_from: list[Path] | None = None,
+    definitions_not_found: list[dict] | None = None,
 ) -> Path:
     """Write a markdown report and the raw results. Judge sections appear only when judge_model is given."""
+    definitions_line = (
+        "Case definitions: refreshed from the current cases file(s) "
+        + ", ".join(f"`{_display_path(p)}`" for p in definitions_from)
+        if definitions_from else None
+    )
     by_category = defaultdict(list)
     for r in results:
         by_category[r["category"]].append(r["status"])
@@ -241,6 +283,7 @@ def write_report(
         f"# Eval report — {datetime.now():%Y-%m-%d %H:%M}",
         "",
         *([f"_{note}_", ""] if note else []),
+        *([definitions_line, ""] if definitions_line else []),
         *(
             [f"Cases: `{_display_path(cases_path)}` · corpus: `{_display_path(corpus_dir)}/`", ""]
             if cases_path and corpus_dir
@@ -294,6 +337,11 @@ def write_report(
         for r in errors:
             lines.append(f"- **{r['id']}** ({r['category']}): {summarize_error('; '.join(r['reasons']))}")
 
+    if definitions_not_found:
+        lines += ["", "## Case definition not found", ""]
+        for r in definitions_not_found:
+            lines.append(f"- **{r['id']}** ({r['category']}): case definition not found; graded with its saved definition")
+
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
     report_path = out_dir / f"report-{stamp}.md"
@@ -308,7 +356,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, nargs="+",
                         help="cases file (default: evals/cases.jsonl); with --rescore, one or more files"
-                             " to take expected_behavior from for saved results that lack it")
+                             " whose current case definitions replace the saved ones")
     parser.add_argument("--corpus", type=Path, default=EVALS_DIR / "corpus")
     parser.add_argument("--out", type=Path, default=EVALS_DIR / "reports")
     parser.add_argument("--delay", type=float, default=4.0, help="seconds between calls (free-tier rate limits)")
