@@ -8,13 +8,19 @@ Usage (from the repo root):
     python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --judge
     python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --defences prompt
     python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl --judge --cases evals/attacks/cases.jsonl
+    python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks/corpus --judge \
+        --defences prompt,trust --repeat 3 --tag stage4
 
 --judge also grades each answer with the LLM judge (JUDGE_MODEL) against the case's
 expected_behavior. With --rescore, --cases re-grades saved answers against the current
 case definitions in those files instead of the ones saved with the results.
+
+--repeat N runs the same configuration N times, writing a results/report pair per run.
+--tag labels every result row so python -m evals.ablation can collect the runs.
 """
 import argparse
 import json
+import re
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -45,7 +51,8 @@ EVALS_DIR = Path(__file__).parent
 DAILY_QUOTA_REASON = "not run: daily quota exhausted"
 NOT_EXERCISED = "NOT_EXERCISED"
 UNSCORED = (ERROR, NOT_EXERCISED)
-JUDGE_FIELDS = ("judge_verdict", "judge_reasoning")
+JUDGE_FIELDS = ("judge_verdict", "judge_reasoning", "judge_model")
+TAG_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 CASE_DEFINITION_FIELDS = (
     "must_contain_any", "must_not_contain", "advisory_not_contain", "expect_refusal", "expected_behavior",
     "poison_source", "category", "rationale",
@@ -192,13 +199,13 @@ def rescore_file(
     With cases_paths, case definitions are refreshed from those files before grading; otherwise
     the definitions saved in the results file are used.
     """
-    results = load_cases(results_path)
+    results = [{**r, "source_run": r.get("source_run") or results_path.name} for r in load_cases(results_path)]
     not_found = None
     if cases_paths:
         results, not_found = refresh_case_definitions(results, load_all_cases(cases_paths))
     results = rescore_results(results)
     if judge:
-        results = apply_judge(results, delay=delay, llm=llm)
+        results = [{**r, "judge_model": settings.judge_model} for r in apply_judge(results, delay=delay, llm=llm)]
         note = f"Rescored from {results_path.name} (no new answers generated; judge re-run)"
     else:
         note = f"Rescored from {results_path.name} (no new model calls)"
@@ -357,6 +364,16 @@ def judge_sections(results: list[dict]) -> list[str]:
     return lines
 
 
+def unique_stamp(out_dir: Path) -> str:
+    """Timestamp for a report/results pair, with a -2, -3 ... suffix if that second is taken."""
+    base = f"{datetime.now():%Y%m%d-%H%M%S}"
+    stamp, n = base, 1
+    while (out_dir / f"results-{stamp}.jsonl").exists() or (out_dir / f"report-{stamp}.md").exists():
+        n += 1
+        stamp = f"{base}-{n}"
+    return stamp
+
+
 def write_report(
     results: list[dict],
     out_dir: Path,
@@ -452,13 +469,52 @@ def write_report(
             lines.append(f"- **{r['id']}** ({r['category']}): case definition not found; graded with its saved definition")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    stamp = unique_stamp(out_dir)
     report_path = out_dir / f"report-{stamp}.md"
     report_path.write_text("\n".join(lines), encoding="utf-8")
     with (out_dir / f"results-{stamp}.jsonl").open("w", encoding="utf-8") as f:
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     return report_path
+
+
+def run_cases(
+    cases: list[dict], store: Chroma, defences: list[str], allowed_domains: list[str], delay: float,
+    run_fields: dict,
+) -> tuple[list[dict], bool]:
+    """Ask every case once and keyword-grade it. Returns the results and whether the daily quota ran out.
+
+    run_fields (tag, cases file, defences, model) are stored on every result row.
+    """
+    results = []
+    quota_exhausted = False
+    for i, case in enumerate(cases, start=1):
+        if quota_exhausted:
+            results.append(
+                {**case, **run_fields, "answer": "", "sources": [], "links_removed": None,
+                 "status": ERROR, "reasons": [DAILY_QUOTA_REASON]}
+            )
+            continue
+
+        try:
+            response = ask_with_retry(case["question"], store, defences, allowed_domains)
+            answer, sources = response["answer"], response["sources"]
+            links_removed = response.get("links_removed")
+            status, reasons = grade(case, answer, sources)
+        except Exception as exc:
+            answer, sources, status, reasons = "", [], ERROR, [f"error: {exc}"]
+            links_removed = None
+            if is_daily_quota_error(exc):
+                quota_exhausted = True
+
+        print(f"[{i}/{len(cases)}] {status:<13} {case['id']:<4} {case['category']}")
+        results.append({**case, **run_fields, "answer": answer, "sources": sources,
+                        "links_removed": links_removed, "status": status, "reasons": reasons})
+        if quota_exhausted:
+            print(f"Daily quota exhausted; skipping the remaining {len(cases) - i} case(s).")
+        else:
+            time.sleep(delay)
+    return results, quota_exhausted
 
 
 def main() -> None:
@@ -482,14 +538,23 @@ def main() -> None:
     parser.add_argument("--defences",
                         help="comma-separated defences to enable, e.g. 'prompt', or 'none'"
                              " (default: DEFENCES from .env)")
+    parser.add_argument("--repeat", type=int, default=1, metavar="N",
+                        help="run the same configuration N times, one results/report pair per run")
+    parser.add_argument("--tag", help="label stored on every result row, for python -m evals.ablation")
     args = parser.parse_args()
 
     if args.judge and not settings.judge_model:
         parser.error("--judge needs JUDGE_MODEL set in .env")
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
+    if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
+        parser.error("--tag may only contain letters, digits, '.', '_' and '-'")
 
     if args.rescore:
         if args.defences is not None:
             parser.error("--defences can't be used with --rescore; saved answers keep the defences they were run with")
+        if args.repeat != 1 or args.tag is not None:
+            parser.error("--repeat and --tag can't be used with --rescore; rescored rows keep their original tag")
         report_path, results = rescore_file(
             args.rescore, args.out, judge=args.judge, cases_paths=args.cases, delay=args.delay
         )
@@ -527,47 +592,33 @@ def main() -> None:
     print(f"Indexing eval corpus from {args.corpus}/ ...")
     store = build_eval_store(args.corpus, manifest)
 
-    results = []
-    quota_exhausted = False
-    for i, case in enumerate(cases, start=1):
-        if quota_exhausted:
-            results.append(
-                {**case, "answer": "", "sources": [], "defences": defences, "links_removed": None,
-                 "status": ERROR, "reasons": [DAILY_QUOTA_REASON]}
-            )
-            continue
+    run_fields = {
+        "tag": args.tag,
+        "cases_file": _display_path(cases_path),
+        "defences": defences,
+        "llm_model": settings.llm_model,
+    }
+    judge_model = settings.judge_model if args.judge else None
+    for run in range(1, args.repeat + 1):
+        if args.repeat > 1:
+            print(f"\n=== Run {run} of {args.repeat} ===")
+        results, quota_exhausted = run_cases(cases, store, defences, allowed_domains, args.delay, run_fields)
 
-        try:
-            response = ask_with_retry(case["question"], store, defences, allowed_domains)
-            answer, sources = response["answer"], response["sources"]
-            links_removed = response.get("links_removed")
-            status, reasons = grade(case, answer, sources)
-        except Exception as exc:
-            answer, sources, status, reasons = "", [], ERROR, [f"error: {exc}"]
-            links_removed = None
-            if is_daily_quota_error(exc):
-                quota_exhausted = True
+        if args.judge:
+            print("\nJudging answers ...")
+            results = apply_judge(results, delay=args.delay)
+        results = with_final([{**r, "judge_model": judge_model} for r in results])
 
-        print(f"[{i}/{len(cases)}] {status:<13} {case['id']:<4} {case['category']}")
-        results.append({**case, "answer": answer, "sources": sources, "defences": defences,
-                        "links_removed": links_removed, "status": status, "reasons": reasons})
-        if quota_exhausted:
-            print(f"Daily quota exhausted; skipping the remaining {len(cases) - i} case(s).")
-        else:
-            time.sleep(args.delay)
-
-    judge_model = None
-    if args.judge:
-        print("\nJudging answers ...")
-        results = apply_judge(results, delay=args.delay)
-        judge_model = settings.judge_model
-
-    results = with_final(results)
-    report_path = write_report(
-        results, args.out, cases_path=cases_path, corpus_dir=args.corpus, judge_model=judge_model,
-        trust_line=trust_line, links_line=links_line,
-    )
-    print(f"\n{summary_line([r['final'] for r in results])}. Report: {report_path}")
+        note_parts = [f"Tag: {args.tag}" if args.tag else None, f"run {run} of {args.repeat}" if args.repeat > 1 else None]
+        report_path = write_report(
+            results, args.out, note=" · ".join(p for p in note_parts if p) or None,
+            cases_path=cases_path, corpus_dir=args.corpus, judge_model=judge_model,
+            trust_line=trust_line, links_line=links_line,
+        )
+        print(f"\n{summary_line([r['final'] for r in results])}. Report: {report_path}")
+        if quota_exhausted and run < args.repeat:
+            print(f"Daily quota exhausted; skipping the remaining {args.repeat - run} run(s).")
+            break
 
 
 if __name__ == "__main__":
