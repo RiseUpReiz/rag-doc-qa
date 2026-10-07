@@ -86,7 +86,7 @@ def test_settings_rejects_trust_without_prompt(monkeypatch):
         Settings(_env_file=None)
 
 
-@pytest.mark.parametrize("defences", [["prompt", "trust"], ["links"]])
+@pytest.mark.parametrize("defences", [["links"], ["prompt", "trust", "links"]])
 def test_unimplemented_defences_raise_before_any_model_call(defences, llm):
     with pytest.raises(NotImplementedError):
         rag.answer_question("q", store=FakeStore(DOCS), defences=defences)
@@ -196,7 +196,7 @@ def run_main(tmp_path, monkeypatch, *extra_args):
     cases_path.write_text(json.dumps({"id": "c1", "category": "control", "question": "q",
                                       "must_contain_any": ["22"]}) + "\n", encoding="utf-8")
     seen = []
-    monkeypatch.setattr(run_eval, "build_eval_store", lambda corpus: None)
+    monkeypatch.setattr(run_eval, "build_eval_store", lambda corpus, manifest=None: None)
     monkeypatch.setattr(run_eval, "answer_question", lambda question, store=None, defences=None:
                         seen.append(defences) or {"answer": "22 days", "sources": []})
     monkeypatch.setattr("sys.argv", ["run_eval", "--cases", str(cases_path), "--corpus", str(tmp_path),
@@ -225,7 +225,7 @@ def test_run_eval_defences_none(tmp_path, monkeypatch):
     assert "Defences: `none`" in report
 
 
-@pytest.mark.parametrize("value", ["trust", "prompt,trust", "firewall"])
+@pytest.mark.parametrize("value", ["trust", "links", "firewall"])
 def test_run_eval_rejects_bad_or_unimplemented_defences_before_running(value, tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         run_main(tmp_path, monkeypatch, "--defences", value)

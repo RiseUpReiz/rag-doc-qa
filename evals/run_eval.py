@@ -23,9 +23,10 @@ from pathlib import Path
 from langchain_chroma import Chroma
 
 from app.config import settings
-from app.ingest import chunk_documents, load_documents
+from app.ingest import chunk_documents, document_paths, load_documents
 from app.providers import get_embeddings
 from app.rag import answer_question, check_defences
+from app.trust import OFFICIAL, UNVERIFIED, ManifestError, load_manifest_if_needed, trust_level
 from evals.judge import JUDGE_ERROR, judge_all
 from evals.scoring import (
     ERROR,
@@ -61,9 +62,12 @@ def load_all_cases(paths: list[Path]) -> list[dict]:
     return [case for path in paths for case in load_cases(path)]
 
 
-def build_eval_store(corpus_dir: Path) -> Chroma:
-    """Index the eval corpus in memory, separate from the app's real index."""
-    chunks = chunk_documents(load_documents(corpus_dir))
+def build_eval_store(corpus_dir: Path, manifest: dict[str, str] | None = None) -> Chroma:
+    """Index the eval corpus in memory, separate from the app's real index.
+
+    With a trust manifest, every chunk is tagged with its document's trust level.
+    """
+    chunks = chunk_documents(load_documents(corpus_dir, manifest))
     return Chroma.from_documents(
         documents=chunks,
         embedding=get_embeddings(),
@@ -255,6 +259,22 @@ def final_failure_reasons(result: dict) -> list[str]:
     return reasons
 
 
+def default_manifest_path(corpus_dir: Path) -> Path:
+    """trusted_sources.json next to the corpus folder (not inside it, so it is never ingested)."""
+    return corpus_dir.resolve().parent / "trusted_sources.json"
+
+
+def trust_header(corpus_dir: Path, manifest_path: Path, manifest: dict[str, str] | None) -> str:
+    """Report line naming the manifest and how many corpus documents it marks official."""
+    if manifest is None:
+        return f"Trust manifest: none (`{_display_path(manifest_path)}` not found; chunks have no trust level)"
+    levels = [trust_level(path, manifest) for path in document_paths(corpus_dir)]
+    return (
+        f"Trust manifest: `{_display_path(manifest_path)}` · {levels.count(OFFICIAL)} official,"
+        f" {levels.count(UNVERIFIED)} unverified document(s)"
+    )
+
+
 def format_defences(defences: list[str]) -> str:
     return ", ".join(defences) if defences else "none"
 
@@ -321,6 +341,7 @@ def write_report(
     judge_model: str | None = None,
     definitions_from: list[Path] | None = None,
     definitions_not_found: list[dict] | None = None,
+    trust_line: str | None = None,
 ) -> Path:
     """Write a markdown report and the raw results. Judge sections appear only when judge_model is given."""
     definitions_line = (
@@ -348,6 +369,7 @@ def write_report(
         "",
         defences_header(results),
         "",
+        *([trust_line, ""] if trust_line else []),
         *([judge_header(results, judge_model), ""] if judge_model else []),
         FINAL_RULE,
         "",
@@ -423,6 +445,8 @@ def main() -> None:
                         help="re-grade a saved results file instead of calling the model")
     parser.add_argument("--judge", action="store_true",
                         help="also grade answers with the LLM judge (JUDGE_MODEL) against expected_behavior")
+    parser.add_argument("--trust-manifest", type=Path,
+                        help="trust manifest (default: trusted_sources.json next to the corpus folder)")
     parser.add_argument("--defences",
                         help="comma-separated defences to enable, e.g. 'prompt', or 'none'"
                              " (default: DEFENCES from .env)")
@@ -453,8 +477,18 @@ def main() -> None:
         parser.error(str(exc))
     print(f"Defences: {format_defences(defences)}")
 
+    manifest_path = args.trust_manifest or default_manifest_path(args.corpus)
+    try:
+        manifest = load_manifest_if_needed(
+            manifest_path, required="trust" in defences or args.trust_manifest is not None
+        )
+    except ManifestError as exc:
+        parser.error(str(exc))
+    trust_line = trust_header(args.corpus, manifest_path, manifest)
+    print(trust_line.replace("`", ""))
+
     print(f"Indexing eval corpus from {args.corpus}/ ...")
-    store = build_eval_store(args.corpus)
+    store = build_eval_store(args.corpus, manifest)
 
     results = []
     quota_exhausted = False
@@ -491,7 +525,8 @@ def main() -> None:
 
     results = with_final(results)
     report_path = write_report(
-        results, args.out, cases_path=cases_path, corpus_dir=args.corpus, judge_model=judge_model
+        results, args.out, cases_path=cases_path, corpus_dir=args.corpus, judge_model=judge_model,
+        trust_line=trust_line,
     )
     print(f"\n{summary_line([r['final'] for r in results])}. Report: {report_path}")
 

@@ -85,7 +85,7 @@ def test_report_lists_not_exercised_and_shows_suite(tmp_path):
 def test_main_saves_sources_and_marks_not_exercised(tmp_path, monkeypatch):
     cases_path = tmp_path / "cases.jsonl"
     cases_path.write_text(json.dumps(POISON_CASE) + "\n", encoding="utf-8")
-    monkeypatch.setattr(run_eval, "build_eval_store", lambda corpus: None)
+    monkeypatch.setattr(run_eval, "build_eval_store", lambda corpus, manifest=None: None)
     monkeypatch.setattr(
         run_eval, "answer_question",
         lambda question, store=None, defences=None: {"answer": "You get 22 days.", "sources": HANDBOOK_ONLY},

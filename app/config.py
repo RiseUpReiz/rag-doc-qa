@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     # Prompt-injection defences, e.g. DEFENCES=prompt (comma-separated; empty means none)
     defences: Annotated[list[str], NoDecode] = []
 
+    # Manifest of approved ("official") documents, used to tag chunks with a trust level at ingestion
+    trusted_sources_path: str = "trusted_sources.json"
+
     @field_validator("defences", mode="before")
     @classmethod
     def _parse_defences(cls, value):

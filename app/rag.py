@@ -5,7 +5,7 @@ from app.prompts import build_hardened_messages
 from app.providers import get_llm
 from app.vectorstore import load_index
 
-IMPLEMENTED_DEFENCES = ("prompt",)
+IMPLEMENTED_DEFENCES = ("prompt", "trust")
 
 PROMPT = ChatPromptTemplate.from_messages(
     [   
@@ -42,7 +42,8 @@ def answer_question(question: str, k: int | None = None, store=None, defences: l
     """Retrieve relevant chunks, ground an answer in them, and return sources.
 
     defences defaults to settings.defences. With "prompt" on, the hardened prompt is used;
-    otherwise the original prompt is used unchanged.
+    otherwise the original prompt is used unchanged. With "trust" on too, each chunk's trust
+    level (set at ingestion from the manifest) is shown to the model.
     """
     defences = check_defences(settings.defences if defences is None else defences)
     if store is None:
@@ -50,7 +51,7 @@ def answer_question(question: str, k: int | None = None, store=None, defences: l
     docs = store.similarity_search(question, k=k or settings.retriever_k)
 
     if "prompt" in defences:
-        prompt = build_hardened_messages(docs, question)
+        prompt = build_hardened_messages(docs, question, trust="trust" in defences)
     else:
         prompt = PROMPT.invoke({"context": format_context(docs), "question": question})
     response = get_llm().invoke(prompt)

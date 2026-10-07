@@ -4,6 +4,8 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 
+from app.trust import trust_level
+
 DATA_DIR = Path("data")
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
@@ -27,14 +29,28 @@ def load_text(path: Path) -> list[Document]:
     return [Document(page_content=text, metadata={"source": path.name})]
 
 
-def load_documents(source_dir: Path) -> list[Document]:
-    """Load every PDF and text file in source_dir into a list of Documents."""
+def document_paths(source_dir: Path) -> list[Path]:
+    """The PDF and text files in source_dir that ingestion will load, in a stable order."""
+    return [
+        path for path in sorted(source_dir.iterdir())
+        if path.is_file() and path.suffix.lower() in (".pdf", ".txt", ".md")
+    ]
+
+
+def load_documents(source_dir: Path, manifest: dict[str, str] | None = None) -> list[Document]:
+    """Load every PDF and text file in source_dir into a list of Documents.
+
+    With a trust manifest, each Document also gets metadata["trust"] ("official" or
+    "unverified"), which its chunks inherit when split.
+    """
     documents: list[Document] = []
-    for path in sorted(source_dir.iterdir()):
-        if path.suffix.lower() == ".pdf":
-            documents.extend(load_pdf(path))
-        elif path.suffix.lower() in (".txt", ".md"):
-            documents.extend(load_text(path))
+    for path in document_paths(source_dir):
+        loaded = load_pdf(path) if path.suffix.lower() == ".pdf" else load_text(path)
+        if manifest is not None:
+            level = trust_level(path, manifest)
+            for doc in loaded:
+                doc.metadata["trust"] = level
+        documents.extend(loaded)
     return documents
 
 
@@ -47,9 +63,9 @@ def chunk_documents(documents: list[Document]) -> list[Document]:
     return splitter.split_documents(documents)
 
 
-def ingest(source_dir: Path = DATA_DIR) -> list[Document]:
+def ingest(source_dir: Path = DATA_DIR, manifest: dict[str, str] | None = None) -> list[Document]:
     """Load every document in source_dir and split it into embeddable chunks."""
-    return chunk_documents(load_documents(source_dir))
+    return chunk_documents(load_documents(source_dir, manifest))
 
 
 if __name__ == "__main__":
