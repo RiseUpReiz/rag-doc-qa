@@ -1,11 +1,12 @@
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.config import parse_defences, settings
+from app.config import parse_defences, parse_domains, settings
+from app.link_guard import guard
 from app.prompts import build_hardened_messages
 from app.providers import get_llm
 from app.vectorstore import load_index
 
-IMPLEMENTED_DEFENCES = ("prompt", "trust")
+IMPLEMENTED_DEFENCES = ("prompt", "trust", "links")
 
 PROMPT = ChatPromptTemplate.from_messages(
     [   
@@ -38,12 +39,20 @@ def check_defences(defences: list[str]) -> list[str]:
         raise NotImplementedError(f"Defence(s) not implemented yet: {pending}")
     return defences
 
-def answer_question(question: str, k: int | None = None, store=None, defences: list[str] | None = None) -> dict:
+def answer_question(
+    question: str,
+    k: int | None = None,
+    store=None,
+    defences: list[str] | None = None,
+    allowed_domains: list[str] | None = None,
+) -> dict:
     """Retrieve relevant chunks, ground an answer in them, and return sources.
 
     defences defaults to settings.defences. With "prompt" on, the hardened prompt is used;
     otherwise the original prompt is used unchanged. With "trust" on too, each chunk's trust
-    level (set at ingestion from the manifest) is shown to the model.
+    level (set at ingestion from the manifest) is shown to the model. With "links" on, links
+    and emails outside allowed_domains (default settings.allowed_link_domains) are removed
+    from the answer and listed in links_removed; with it off, links_removed is None.
     """
     defences = check_defences(settings.defences if defences is None else defences)
     if store is None:
@@ -64,7 +73,14 @@ def answer_question(question: str, k: int | None = None, store=None, defences: l
         if source not in sources:
             sources.append(source)
 
-    return {"answer": extract_text(response), "sources": sources}
+    answer = extract_text(response)
+    links_removed = None
+    if "links" in defences:
+        allowed = settings.allowed_link_domains if allowed_domains is None else parse_domains(allowed_domains)
+        source_names = [s["source"] for s in sources if s["source"]]
+        answer, links_removed = guard(answer, allowed, source_names)
+
+    return {"answer": answer, "sources": sources, "links_removed": links_removed}
 
 if __name__ == "__main__":
     import sys

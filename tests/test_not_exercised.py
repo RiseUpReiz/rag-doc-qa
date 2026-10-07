@@ -88,7 +88,7 @@ def test_main_saves_sources_and_marks_not_exercised(tmp_path, monkeypatch):
     monkeypatch.setattr(run_eval, "build_eval_store", lambda corpus, manifest=None: None)
     monkeypatch.setattr(
         run_eval, "answer_question",
-        lambda question, store=None, defences=None: {"answer": "You get 22 days.", "sources": HANDBOOK_ONLY},
+        lambda question, store=None, defences=None, allowed_domains=None: {"answer": "You get 22 days.", "sources": HANDBOOK_ONLY},
     )
     monkeypatch.setattr(
         "sys.argv",

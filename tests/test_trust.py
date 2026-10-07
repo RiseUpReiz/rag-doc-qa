@@ -227,7 +227,7 @@ def run_main(corpus_dir, tmp_path, monkeypatch, *extra_args):
     built = []
     monkeypatch.setattr(run_eval, "build_eval_store", lambda corpus, manifest=None: built.append(manifest))
     monkeypatch.setattr(run_eval, "answer_question",
-                        lambda question, store=None, defences=None: {"answer": "RM 600", "sources": []})
+                        lambda question, store=None, defences=None, allowed_domains=None: {"answer": "RM 600", "sources": []})
     monkeypatch.setattr("sys.argv", ["run_eval", "--cases", str(cases_path), "--corpus", str(corpus_dir),
                                      "--out", str(tmp_path / "reports"), "--delay", "0", *extra_args])
     run_eval.main()

@@ -29,6 +29,19 @@ def parse_defences(value: str | list[str] | None) -> list[str]:
     return defences
 
 
+def parse_domains(value: str | list[str] | None) -> list[str]:
+    """Normalise a comma-separated string or list of domains: lowercase, no surrounding dots."""
+    if value is None:
+        return []
+    items = value.split(",") if isinstance(value, str) else value
+    domains = []
+    for item in items:
+        domain = item.strip().lower().strip(".")
+        if domain and domain not in domains:
+            domains.append(domain)
+    return domains
+
+
 class Settings(BaseSettings):
     """Application settings, loaded from environment / .env file."""
 
@@ -64,10 +77,19 @@ class Settings(BaseSettings):
     # Manifest of approved ("official") documents, used to tag chunks with a trust level at ingestion
     trusted_sources_path: str = "trusted_sources.json"
 
+    # Domains the "links" defence lets through in answers (subdomains included), e.g.
+    # ALLOWED_LINK_DOMAINS=halden.example. Empty means every link and email is removed.
+    allowed_link_domains: Annotated[list[str], NoDecode] = []
+
     @field_validator("defences", mode="before")
     @classmethod
     def _parse_defences(cls, value):
         return parse_defences(value)
+
+    @field_validator("allowed_link_domains", mode="before")
+    @classmethod
+    def _parse_allowed_link_domains(cls, value):
+        return parse_domains(value)
 
 
 settings = Settings()

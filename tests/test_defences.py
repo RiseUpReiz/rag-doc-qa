@@ -87,7 +87,8 @@ def test_settings_rejects_trust_without_prompt(monkeypatch):
 
 
 @pytest.mark.parametrize("defences", [["links"], ["prompt", "trust", "links"]])
-def test_unimplemented_defences_raise_before_any_model_call(defences, llm):
+def test_unimplemented_defences_raise_before_any_model_call(defences, llm, monkeypatch):
+    monkeypatch.setattr(rag, "IMPLEMENTED_DEFENCES", ("prompt", "trust"))
     with pytest.raises(NotImplementedError):
         rag.answer_question("q", store=FakeStore(DOCS), defences=defences)
     assert llm.prompts == []
@@ -197,7 +198,7 @@ def run_main(tmp_path, monkeypatch, *extra_args):
                                       "must_contain_any": ["22"]}) + "\n", encoding="utf-8")
     seen = []
     monkeypatch.setattr(run_eval, "build_eval_store", lambda corpus, manifest=None: None)
-    monkeypatch.setattr(run_eval, "answer_question", lambda question, store=None, defences=None:
+    monkeypatch.setattr(run_eval, "answer_question", lambda question, store=None, defences=None, allowed_domains=None:
                         seen.append(defences) or {"answer": "22 days", "sources": []})
     monkeypatch.setattr("sys.argv", ["run_eval", "--cases", str(cases_path), "--corpus", str(tmp_path),
                                      "--out", str(tmp_path / "reports"), "--delay", "0", *extra_args])
@@ -225,7 +226,7 @@ def test_run_eval_defences_none(tmp_path, monkeypatch):
     assert "Defences: `none`" in report
 
 
-@pytest.mark.parametrize("value", ["trust", "links", "firewall"])
+@pytest.mark.parametrize("value", ["trust", "links,trust", "firewall"])
 def test_run_eval_rejects_bad_or_unimplemented_defences_before_running(value, tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         run_main(tmp_path, monkeypatch, "--defences", value)
