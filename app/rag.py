@@ -1,8 +1,11 @@
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.config import settings
+from app.config import parse_defences, settings
+from app.prompts import build_hardened_messages
 from app.providers import get_llm
 from app.vectorstore import load_index
+
+IMPLEMENTED_DEFENCES = ("prompt",)
 
 PROMPT = ChatPromptTemplate.from_messages(
     [   
@@ -27,13 +30,29 @@ def extract_text(response) -> str:
     parts = [part.get("text", "") for part in content if isinstance(part, dict)]
     return "".join(parts).strip()
 
-def answer_question(question: str, k: int | None = None, store=None) -> dict:
-    """Retrieve relevant chunks, ground an answer in them, and return sources."""
+def check_defences(defences: list[str]) -> list[str]:
+    """Validate a defences list and fail on any that aren't implemented yet."""
+    defences = parse_defences(defences)
+    pending = [d for d in defences if d not in IMPLEMENTED_DEFENCES]
+    if pending:
+        raise NotImplementedError(f"Defence(s) not implemented yet: {pending}")
+    return defences
+
+def answer_question(question: str, k: int | None = None, store=None, defences: list[str] | None = None) -> dict:
+    """Retrieve relevant chunks, ground an answer in them, and return sources.
+
+    defences defaults to settings.defences. With "prompt" on, the hardened prompt is used;
+    otherwise the original prompt is used unchanged.
+    """
+    defences = check_defences(settings.defences if defences is None else defences)
     if store is None:
         store = load_index()
     docs = store.similarity_search(question, k=k or settings.retriever_k)
 
-    prompt = PROMPT.invoke({"context": format_context(docs), "question": question})
+    if "prompt" in defences:
+        prompt = build_hardened_messages(docs, question)
+    else:
+        prompt = PROMPT.invoke({"context": format_context(docs), "question": question})
     response = get_llm().invoke(prompt)
 
     sources = []

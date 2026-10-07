@@ -1,4 +1,33 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+VALID_DEFENCES = ("prompt", "trust", "links")
+
+
+def parse_defences(value: str | list[str] | None) -> list[str]:
+    """Normalise defences from a comma-separated string or list, and check they are valid.
+
+    "none" (or an empty value) means no defences. "trust" builds on the hardened prompt,
+    so it requires "prompt".
+    """
+    if value is None:
+        return []
+    items = value.split(",") if isinstance(value, str) else value
+    defences = []
+    for item in items:
+        name = item.strip().lower()
+        if name and name != "none" and name not in defences:
+            defences.append(name)
+
+    unknown = [d for d in defences if d not in VALID_DEFENCES]
+    if unknown:
+        raise ValueError(f"Unknown defence(s) {unknown}; valid values are {list(VALID_DEFENCES)} or 'none'")
+    if "trust" in defences and "prompt" not in defences:
+        raise ValueError("The 'trust' defence requires the 'prompt' defence")
+    return defences
+
 
 class Settings(BaseSettings):
     """Application settings, loaded from environment / .env file."""
@@ -28,6 +57,14 @@ class Settings(BaseSettings):
     # Eval judge settings (kept separate so the judge can be a different model from llm_model)
     judge_provider: str = "google"
     judge_model: str | None = None
+
+    # Prompt-injection defences, e.g. DEFENCES=prompt (comma-separated; empty means none)
+    defences: Annotated[list[str], NoDecode] = []
+
+    @field_validator("defences", mode="before")
+    @classmethod
+    def _parse_defences(cls, value):
+        return parse_defences(value)
 
 
 settings = Settings()
