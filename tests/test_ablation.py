@@ -62,15 +62,30 @@ def test_groups_by_suite_and_defences_in_ablation_order(reports):
     assert list(grouped[BASELINE]) == [("prompt",)]
 
 
-def test_rescored_run_replaces_its_original(reports):
+def test_file_that_was_rescored_is_ignored(reports):
     write_run(reports, "20261007-100000", {"c1": FAIL})
-    write_run(reports, "20261007-120000", {"c1": PASS}, source_run="results-20261007-100000.jsonl")
-    write_run(reports, "20261007-130000", {"c1": FAIL}, source_run="results-20261007-100000.jsonl")
     write_run(reports, "20261007-110000", {"c1": PASS})
+    write_run(reports, "20261007-120000", {"c1": PASS}, rescored_from="results-20261007-100000.jsonl")
 
     runs = load_runs(reports, "t1")
 
-    assert [r.path.name for r in runs] == ["results-20261007-110000.jsonl", "results-20261007-130000.jsonl"]
+    assert [r.path.name for r in runs] == ["results-20261007-110000.jsonl", "results-20261007-120000.jsonl"]
+
+
+def test_chain_of_rescores_counts_the_run_once_with_its_latest_grading(reports):
+    write_run(reports, "20261007-100000", {"c1": FAIL})
+    write_run(reports, "20261007-120000", {"c1": FAIL}, rescored_from="results-20261007-100000.jsonl")
+    write_run(reports, "20261007-130000", {"c1": PASS}, rescored_from="results-20261007-120000.jsonl")
+
+    assert [r.path.name for r in load_runs(reports, "t1")] == ["results-20261007-130000.jsonl"]
+
+
+def test_two_separate_rescores_of_one_run_keep_only_the_newest(reports):
+    write_run(reports, "20261007-100000", {"c1": FAIL})
+    write_run(reports, "20261007-120000", {"c1": PASS}, rescored_from="results-20261007-100000.jsonl")
+    write_run(reports, "20261007-130000", {"c1": FAIL}, rescored_from="results-20261007-100000.jsonl")
+
+    assert [r.path.name for r in load_runs(reports, "t1")] == ["results-20261007-130000.jsonl"]
 
 
 def test_run_mixing_configurations_is_rejected(reports):
@@ -93,8 +108,8 @@ def test_suite_table_lists_passes_per_run_and_range(reports):
     configs = group_runs(load_runs(reports, "t1"))[ATTACKS]
     lines = suite_table(configs)
 
-    assert "| none | 3 | 2, 1, 2 | 1–2 | 0 | 0 |" in lines
-    assert "| prompt | 1 | 2 | 2–2 | 0 | 0 |" in lines
+    assert "| none | 3 | 2, 1, 2 | 1–2 | 0 | 0 | 0 |" in lines
+    assert "| prompt | 1 | 2 | 2–2 | 0 | 0 | 0 |" in lines
 
 
 def test_errors_and_not_exercised_are_counted_and_flagged(reports):
@@ -103,7 +118,7 @@ def test_errors_and_not_exercised_are_counted_and_flagged(reports):
 
     report = render("t1", load_runs(reports, "t1"))
 
-    assert "| none ⚠ | 2 | 1, 1 | 1–1 | 1 | 1 |" in report
+    assert "| none ⚠ | 2 | 1, 1 | 1–1 | 1 | 1 | 0 |" in report
     assert "⚠ **none**: 1 ERROR and 1 NOT_EXERCISED result(s) across 2 run(s)" in report
 
 
@@ -112,7 +127,25 @@ def test_unequal_run_sizes_show_passed_out_of_total(reports):
     write_run(reports, "20261007-100100", {"c1": PASS})
 
     lines = suite_table(group_runs(load_runs(reports, "t1"))[ATTACKS])
-    assert "| none | 2 | 2/2, 1/1 | 1–2 | 0 | 0 |" in lines
+    assert "| none | 2 | 2/2, 1/1 | 1–2 | 0 | 0 | 0 |" in lines
+
+
+def test_runs_with_judge_errors_are_flagged_and_left_out_of_min_max(reports):
+    write_run(reports, "20261007-100000", {"c1": PASS, "c2": PASS})
+    write_run(reports, "20261007-100100", {"c1": PASS, "c2": FAIL})
+    write_run(reports, "20261007-100200", {"c1": PASS, "c2": PASS}, judge_verdict="JUDGE_ERROR")
+
+    report = render("t1", load_runs(reports, "t1"))
+
+    assert "| none ⚠ | 3 | 2, 1, 2 (incomplete) | 1–2 | 0 | 0 | 2 |" in report
+    assert "1 of 3 run(s) still have JUDGE_ERROR rows: `results-20261007-100200.jsonl` (2)" in report
+    assert "| c2 | cat_c2 | 2/3 (1 judge error) |" in report
+
+
+def test_min_max_is_blank_when_every_run_is_incomplete(reports):
+    write_run(reports, "20261007-100000", {"c1": PASS}, judge_verdict="JUDGE_ERROR")
+    lines = suite_table(group_runs(load_runs(reports, "t1"))[ATTACKS])
+    assert "| none ⚠ | 1 | 1 (incomplete) | — | 0 | 0 | 1 |" in lines
 
 
 # --- per-case table ---
@@ -224,12 +257,13 @@ def test_bad_tags_are_rejected(tag, tmp_path, monkeypatch):
         run_main(tmp_path, monkeypatch, "--tag", tag)
 
 
-def test_rescore_keeps_tag_and_records_source_run(tmp_path, reports):
+def test_rescore_keeps_tag_and_records_rescored_from(tmp_path, reports):
     original = write_run(reports, "20261007-100000", {"c1": PASS})
     _, results = run_eval.rescore_file(original, reports)
     assert results[0]["tag"] == "t1"
-    assert results[0]["source_run"] == "results-20261007-100000.jsonl"
-    assert len(load_runs(reports, "t1")) == 1
+    assert results[0]["rescored_from"] == "results-20261007-100000.jsonl"
+    [run] = load_runs(reports, "t1")
+    assert run.path.name != original.name
 
 
 def test_unique_stamp_avoids_overwriting(tmp_path, monkeypatch):

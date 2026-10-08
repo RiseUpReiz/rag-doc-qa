@@ -8,12 +8,17 @@ Usage (from the repo root):
     python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --judge
     python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --defences prompt
     python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl --judge --cases evals/attacks/cases.jsonl
+    python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl --judge-missing-only
     python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks/corpus --judge \
         --defences prompt,trust --repeat 3 --tag stage4
 
 --judge also grades each answer with the LLM judge (JUDGE_MODEL) against the case's
 expected_behavior. With --rescore, --cases re-grades saved answers against the current
 case definitions in those files instead of the ones saved with the results.
+
+--judge-missing-only (with --rescore) keeps verdicts from the current judge model and judges
+only what is missing or JUDGE_ERROR, starting from the latest rescore of the file. If the
+judge's daily quota runs out, what was done is saved; run the same command again to resume.
 
 --repeat N runs the same configuration N times, writing a results/report pair per run.
 --tag labels every result row so python -m evals.ablation can collect the runs.
@@ -53,6 +58,7 @@ NOT_EXERCISED = "NOT_EXERCISED"
 UNSCORED = (ERROR, NOT_EXERCISED)
 JUDGE_FIELDS = ("judge_verdict", "judge_reasoning", "judge_model")
 TAG_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+RESULTS_NAME = re.compile(r"results-(\d{8}-\d{6})(?:-(\d+))?\.jsonl$")
 CASE_DEFINITION_FIELDS = (
     "must_contain_any", "must_not_contain", "advisory_not_contain", "expect_refusal", "expected_behavior",
     "poison_source", "category", "rationale",
@@ -170,6 +176,63 @@ def refresh_case_definitions(results: list[dict], cases: list[dict]) -> tuple[li
     return refreshed, not_found
 
 
+def results_order(path: Path) -> tuple[datetime, int, str]:
+    """Chronological sort key for a results file; "-2", "-3" suffixes break ties within one second."""
+    match = RESULTS_NAME.search(path.name)
+    if not match:
+        return datetime.fromtimestamp(path.stat().st_mtime), 1, path.name
+    return datetime.strptime(match.group(1), "%Y%m%d-%H%M%S"), int(match.group(2) or 1), path.name
+
+
+def read_rescored_from(path: Path) -> str | None:
+    """The file a results file was rescored from (from its first row), or None for an original run."""
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                return json.loads(line).get("rescored_from")
+    return None
+
+
+def rescore_lineage(path: Path, parents: dict[str, str | None]) -> list[str]:
+    """path's name followed by each file it was rescored from, back to the original run."""
+    chain, name = [], path.name
+    while name and name not in chain:
+        chain.append(name)
+        name = parents.get(name)
+    return chain
+
+
+def latest_rescore(path: Path, directory: Path) -> Path:
+    """The newest results file in directory rescored (directly or via other rescores) from path, else path."""
+    files = list(directory.glob("results-*.jsonl")) if directory.exists() else []
+    parents = {f.name: read_rescored_from(f) for f in files}
+    descendants = [f for f in files if f.name != path.name and path.name in rescore_lineage(f, parents)]
+    return max([path, *descendants], key=results_order)
+
+
+def reusable_judgement(saved: dict, current: dict) -> bool:
+    """A saved verdict can be kept if it is a real verdict from the current judge model, given
+    against the same expected_behavior the case has now."""
+    return (
+        saved.get("judge_verdict") in (PASS, FAIL)
+        and saved.get("judge_model") == settings.judge_model
+        and saved.get("expected_behavior") == current.get("expected_behavior")
+    )
+
+
+def judge_missing(saved: list[dict], results: list[dict], delay: float, llm=None) -> tuple[list[dict], int]:
+    """Keep reusable saved verdicts and judge the rest. Returns the results and how many were kept."""
+    keep = [reusable_judgement(s, r) for s, r in zip(saved, results)]
+    fresh = iter(apply_judge([r for r, k in zip(results, keep) if not k], delay=delay, llm=llm))
+    merged = []
+    for s, r, k in zip(saved, results, keep):
+        if k:
+            merged.append({**r, **{field: s.get(field) for field in JUDGE_FIELDS}})
+        else:
+            merged.append({**next(fresh), "judge_model": settings.judge_model})
+    return merged, sum(keep)
+
+
 def rescore_results(results: list[dict]) -> list[dict]:
     """Re-apply the current scoring to saved answers. ERROR cases were never answered, so they stay ERROR.
 
@@ -193,25 +256,38 @@ def rescore_file(
     cases_paths: list[Path] | None = None,
     delay: float = 0.0,
     llm=None,
+    judge_missing_only: bool = False,
 ) -> tuple[Path, list[dict]]:
     """Re-grade a saved results file and write a new report, without calling the system under test.
 
     With cases_paths, case definitions are refreshed from those files before grading; otherwise
-    the definitions saved in the results file are used.
+    the definitions saved in the results file are used. Every row records the file it was
+    rescored from in "rescored_from"; its tag is kept.
+
+    judge_missing_only starts from the latest rescore of results_path in out_dir (so repeating
+    the command resumes) and only judges rows without a reusable verdict.
     """
-    results = [{**r, "source_run": r.get("source_run") or results_path.name} for r in load_cases(results_path)]
+    source = latest_rescore(results_path, out_dir) if judge_missing_only else results_path
+    if source != results_path:
+        print(f"Resuming from {source.name}, the latest rescore of {results_path.name}")
+    saved = load_cases(source)
+    results = [{**r, "rescored_from": source.name} for r in saved]
     not_found = None
     if cases_paths:
         results, not_found = refresh_case_definitions(results, load_all_cases(cases_paths))
     results = rescore_results(results)
-    if judge:
+    if judge_missing_only:
+        results, kept = judge_missing(saved, results, delay=delay, llm=llm)
+        note = (f"Rescored from {source.name} (no new answers generated; kept {kept} verdict(s)"
+                f" from `{settings.judge_model}`, judged only missing or JUDGE_ERROR cases)")
+    elif judge:
         results = [{**r, "judge_model": settings.judge_model} for r in apply_judge(results, delay=delay, llm=llm)]
-        note = f"Rescored from {results_path.name} (no new answers generated; judge re-run)"
+        note = f"Rescored from {source.name} (no new answers generated; judge re-run)"
     else:
-        note = f"Rescored from {results_path.name} (no new model calls)"
+        note = f"Rescored from {source.name} (no new model calls)"
     results = with_final(results)
     report_path = write_report(
-        results, out_dir, note=note, judge_model=settings.judge_model if judge else None,
+        results, out_dir, note=note, judge_model=settings.judge_model if judge or judge_missing_only else None,
         definitions_from=cases_paths, definitions_not_found=not_found,
     )
     return report_path, results
@@ -530,6 +606,9 @@ def main() -> None:
                         help="re-grade a saved results file instead of calling the model")
     parser.add_argument("--judge", action="store_true",
                         help="also grade answers with the LLM judge (JUDGE_MODEL) against expected_behavior")
+    parser.add_argument("--judge-missing-only", action="store_true",
+                        help="with --rescore: keep verdicts from the current judge model and judge only"
+                             " missing or JUDGE_ERROR cases; repeat the command to resume after a quota stop")
     parser.add_argument("--allowed-domains",
                         help="comma-separated domains the links defence allows, e.g. 'halden.example'"
                              " (default: ALLOWED_LINK_DOMAINS from .env)")
@@ -543,8 +622,10 @@ def main() -> None:
     parser.add_argument("--tag", help="label stored on every result row, for python -m evals.ablation")
     args = parser.parse_args()
 
-    if args.judge and not settings.judge_model:
-        parser.error("--judge needs JUDGE_MODEL set in .env")
+    if (args.judge or args.judge_missing_only) and not settings.judge_model:
+        parser.error("--judge and --judge-missing-only need JUDGE_MODEL set in .env")
+    if args.judge_missing_only and not args.rescore:
+        parser.error("--judge-missing-only only works with --rescore")
     if args.repeat < 1:
         parser.error("--repeat must be at least 1")
     if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
@@ -556,9 +637,13 @@ def main() -> None:
         if args.repeat != 1 or args.tag is not None:
             parser.error("--repeat and --tag can't be used with --rescore; rescored rows keep their original tag")
         report_path, results = rescore_file(
-            args.rescore, args.out, judge=args.judge, cases_paths=args.cases, delay=args.delay
+            args.rescore, args.out, judge=args.judge, cases_paths=args.cases, delay=args.delay,
+            judge_missing_only=args.judge_missing_only,
         )
         print(f"{summary_line([r['final'] for r in results])}. Report: {report_path}")
+        unjudged = sum(r.get("judge_verdict") == JUDGE_ERROR for r in results)
+        if unjudged and args.judge_missing_only:
+            print(f"{unjudged} case(s) still JUDGE_ERROR; run the same command again to resume.")
         return
 
     if args.cases and len(args.cases) > 1:
