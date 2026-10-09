@@ -89,15 +89,20 @@ def pass_rate(statuses: list[str]) -> float | None:
 _QUOTA_ID = re.compile(r"""['"]quotaId['"]\s*:\s*['"]([^'"]+)['"]""")
 
 
+def is_daily_quota_message(text: str) -> bool:
+    """True if an error message is a 429 for an exhausted per-day quota."""
+    if "429" not in text and "RESOURCE_EXHAUSTED" not in text:
+        return False
+    return any("PerDay" in quota_id for quota_id in _QUOTA_ID.findall(text))
+
+
 def is_daily_quota_error(exc: BaseException) -> bool:
     """True if the exception (or one it was raised from) is a 429 for an exhausted per-day quota."""
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
-        text = str(exc)
-        if "429" in text or "RESOURCE_EXHAUSTED" in text:
-            if any("PerDay" in quota_id for quota_id in _QUOTA_ID.findall(text)):
-                return True
+        if is_daily_quota_message(str(exc)):
+            return True
         exc = exc.__cause__ or exc.__context__
     return False
 

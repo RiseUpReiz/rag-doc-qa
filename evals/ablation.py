@@ -19,7 +19,7 @@ from pathlib import Path
 
 from app.config import VALID_DEFENCES
 from evals.judge import JUDGE_ERROR
-from evals.run_eval import EVALS_DIR, NOT_EXERCISED, TAG_PATTERN, rescore_lineage, results_order
+from evals.run_eval import EVALS_DIR, NOT_EXERCISED, RESULTS_NAME, TAG_PATTERN, rescore_lineage, results_order
 from evals.scoring import ERROR, PASS
 
 CONFIG_ORDER = [(), ("prompt",), ("prompt", "trust"), ("prompt", "trust", "links")]
@@ -29,14 +29,24 @@ CONFIG_ORDER = [(), ("prompt",), ("prompt", "trust"), ("prompt", "trust", "links
 class Run:
     path: Path
     rows: list[dict]
+    original: str = ""
 
     @property
     def order(self) -> tuple[datetime, int, str]:
+        """Sort key of this file (its own timestamp), used to pick the latest grading."""
         return results_order(self.path)
 
     @property
+    def run_order(self) -> tuple[datetime, int, str]:
+        """Sort key of the original run (before any rescore), so runs stay in the order they happened."""
+        if RESULTS_NAME.search(self.original):
+            return results_order(self.path.with_name(self.original))
+        return self.order
+
+    @property
     def started(self) -> datetime:
-        return self.order[0]
+        """When the run itself happened: the timestamp of the original file, not of a later rescore."""
+        return self.run_order[0]
 
     @property
     def rescored_from(self) -> str | None:
@@ -68,7 +78,7 @@ def final(row: dict) -> str:
 
 
 def load_runs(reports_dir: Path, tag: str) -> list[Run]:
-    """Tagged runs in reports_dir, oldest first, each counted once with its latest grading.
+    """Tagged runs in reports_dir, each counted once with its latest grading, ordered by when the run happened.
 
     A file that a later file was rescored from is dropped. If one run was rescored more than
     once separately, only the newest rescore is kept.
@@ -86,10 +96,10 @@ def load_runs(reports_dir: Path, tag: str) -> list[Run]:
     for run in tagged:
         if run.path.name in superseded:
             continue
-        original = rescore_lineage(run.path, parents)[-1]
-        if original not in newest or run.order > newest[original].order:
-            newest[original] = run
-    return sorted(newest.values(), key=lambda run: run.order)
+        run.original = rescore_lineage(run.path, parents)[-1]
+        if run.original not in newest or run.order > newest[run.original].order:
+            newest[run.original] = run
+    return sorted(newest.values(), key=lambda run: run.run_order)
 
 
 def group_runs(runs: list[Run]) -> dict[str, dict[tuple[str, ...], list[Run]]]:

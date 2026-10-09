@@ -69,7 +69,18 @@ def test_file_that_was_rescored_is_ignored(reports):
 
     runs = load_runs(reports, "t1")
 
-    assert [r.path.name for r in runs] == ["results-20261007-110000.jsonl", "results-20261007-120000.jsonl"]
+    assert [r.path.name for r in runs] == ["results-20261007-120000.jsonl", "results-20261007-110000.jsonl"]
+    assert [r.started.hour for r in runs] == [10, 11]
+
+
+def test_date_range_uses_when_runs_happened_not_when_they_were_rescored(reports):
+    write_run(reports, "20261007-100000", {"c1": FAIL})
+    write_run(reports, "20261009-090000", {"c1": PASS}, rescored_from="results-20261007-100000.jsonl")
+    write_run(reports, "20261007-110000", {"c1": PASS})
+
+    report = render("t1", load_runs(reports, "t1"))
+
+    assert "2 run(s) from 2026-10-07 10:00 to 2026-10-07 11:00." in report
 
 
 def test_chain_of_rescores_counts_the_run_once_with_its_latest_grading(reports):

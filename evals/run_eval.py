@@ -38,7 +38,7 @@ from app.ingest import chunk_documents, document_paths, load_documents
 from app.providers import get_embeddings
 from app.rag import answer_question, check_defences
 from app.trust import OFFICIAL, UNVERIFIED, ManifestError, load_manifest_if_needed, trust_level
-from evals.judge import JUDGE_ERROR, judge_all
+from evals.judge import JUDGE_ERROR, QUOTA_REASON, judge_all
 from evals.scoring import (
     ERROR,
     FAIL,
@@ -46,6 +46,7 @@ from evals.scoring import (
     case_status,
     forbidden_terms,
     is_daily_quota_error,
+    is_daily_quota_message,
     overall_line,
     pass_rate,
     score_case,
@@ -220,6 +221,39 @@ def reusable_judgement(saved: dict, current: dict) -> bool:
     )
 
 
+def regrade_saved(
+    saved: list[dict], source_name: str, cases_paths: list[Path] | None = None
+) -> tuple[list[dict], list[dict] | None]:
+    """Keyword-regrade saved rows, refreshing case definitions from cases_paths if given.
+
+    Returns the regraded rows (judge fields removed, rescored_from set) and, with cases_paths,
+    the rows whose case definition was not found.
+    """
+    results = [{**r, "rescored_from": source_name} for r in saved]
+    not_found = None
+    if cases_paths:
+        results, not_found = refresh_case_definitions(results, load_all_cases(cases_paths))
+    return rescore_results(results), not_found
+
+
+def judge_calls_needed(path: Path, cases_paths: list[Path] | None = None) -> int:
+    """How many judge calls rescoring path with --judge-missing-only would make."""
+    saved = load_cases(path)
+    results, _ = regrade_saved(saved, path.name, cases_paths)
+    return sum(
+        not reusable_judgement(s, r) and judge_skip_reason(r) is None for s, r in zip(saved, results)
+    )
+
+
+def stopped_by_daily_quota(results: list[dict]) -> bool:
+    """True if judging these results was cut short by the judge's daily quota."""
+    return any(
+        r.get("judge_verdict") == JUDGE_ERROR
+        and (r.get("judge_reasoning") == QUOTA_REASON or is_daily_quota_message(r.get("judge_reasoning") or ""))
+        for r in results
+    )
+
+
 def judge_missing(saved: list[dict], results: list[dict], delay: float, llm=None) -> tuple[list[dict], int]:
     """Keep reusable saved verdicts and judge the rest. Returns the results and how many were kept."""
     keep = [reusable_judgement(s, r) for s, r in zip(saved, results)]
@@ -271,11 +305,7 @@ def rescore_file(
     if source != results_path:
         print(f"Resuming from {source.name}, the latest rescore of {results_path.name}")
     saved = load_cases(source)
-    results = [{**r, "rescored_from": source.name} for r in saved]
-    not_found = None
-    if cases_paths:
-        results, not_found = refresh_case_definitions(results, load_all_cases(cases_paths))
-    results = rescore_results(results)
+    results, not_found = regrade_saved(saved, source.name, cases_paths)
     if judge_missing_only:
         results, kept = judge_missing(saved, results, delay=delay, llm=llm)
         note = (f"Rescored from {source.name} (no new answers generated; kept {kept} verdict(s)"
