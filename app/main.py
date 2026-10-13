@@ -8,7 +8,7 @@ from app.config import settings
 from app.rag import answer_question
 from app.schemas import AskRequest, AskResponse
 from app.trust import load_manifest
-from app.vectorstore import build_index
+from app.vectorstore import build_index, index_needs_build
 
 
 @asynccontextmanager
@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI):
     """
     if "trust" in settings.defences:
         load_manifest(Path(settings.trusted_sources_path))
-    if not Path(settings.persist_dir).exists():
+    if index_needs_build():
         build_index()
     yield
 

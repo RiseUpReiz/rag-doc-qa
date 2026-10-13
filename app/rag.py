@@ -4,7 +4,7 @@ from app.config import parse_defences, parse_domains, settings
 from app.link_guard import guard
 from app.prompts import build_hardened_messages
 from app.providers import get_llm
-from app.vectorstore import load_index
+from app.vectorstore import REBUILD_HINT, EmptyIndexError, index_is_empty, load_index
 
 IMPLEMENTED_DEFENCES = ("prompt", "trust", "links")
 
@@ -53,11 +53,17 @@ def answer_question(
     level (set at ingestion from the manifest) is shown to the model. With "links" on, links
     and emails outside allowed_domains (default settings.allowed_link_domains) are removed
     from the answer and listed in links_removed; with it off, links_removed is None.
+
+    Raises EmptyIndexError, before any model call, if the index has no documents.
     """
     defences = check_defences(settings.defences if defences is None else defences)
     if store is None:
         store = load_index()
+        if index_is_empty(store):
+            raise EmptyIndexError(f"The index at {settings.persist_dir} is empty; {REBUILD_HINT}")
     docs = store.similarity_search(question, k=k or settings.retriever_k)
+    if not docs:
+        raise EmptyIndexError(f"No documents were retrieved, so the index is empty; {REBUILD_HINT}")
 
     if "prompt" in defences:
         prompt = build_hardened_messages(docs, question, trust="trust" in defences)
