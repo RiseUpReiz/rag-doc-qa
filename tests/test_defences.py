@@ -75,6 +75,19 @@ def test_trust_without_prompt_raises():
         parse_defences("trust")
 
 
+def test_settings_default_to_all_defences(monkeypatch):
+    monkeypatch.delenv("DEFENCES", raising=False)
+    monkeypatch.delenv("ALLOWED_LINK_DOMAINS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.defences == ["prompt", "trust", "links"]
+    assert settings.allowed_link_domains == []
+
+
+def test_settings_defences_none_turns_them_off(monkeypatch):
+    monkeypatch.setenv("DEFENCES", "none")
+    assert Settings(_env_file=None).defences == []
+
+
 def test_settings_reads_comma_separated_env(monkeypatch):
     monkeypatch.setenv("DEFENCES", "prompt,links")
     assert Settings(_env_file=None).defences == ["prompt", "links"]
@@ -224,6 +237,13 @@ def test_run_eval_defences_none(tmp_path, monkeypatch):
     assert seen == [[]]
     report = next((tmp_path / "reports").glob("report-*.md")).read_text(encoding="utf-8")
     assert "Defences: `none`" in report
+
+
+def test_run_eval_requires_defences_and_ignores_the_app_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_eval.settings, "defences", ["prompt"])
+    with pytest.raises(SystemExit):
+        run_main(tmp_path, monkeypatch)
+    assert not (tmp_path / "reports").exists()
 
 
 @pytest.mark.parametrize("value", ["trust", "links,trust", "firewall"])

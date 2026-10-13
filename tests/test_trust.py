@@ -87,6 +87,13 @@ def test_missing_manifest_raises(tmp_path):
         load_manifest(tmp_path / "trusted_sources.json")
 
 
+def test_missing_manifest_error_says_how_to_create_it(tmp_path):
+    path = tmp_path / "trusted_sources.json"
+    with pytest.raises(ManifestError, match=r"python -m app\.trust make-manifest .* --out ") as exc:
+        load_manifest(path)
+    assert str(path) in str(exc.value)
+
+
 def test_missing_manifest_is_only_an_error_when_required(tmp_path):
     assert load_manifest_if_needed(tmp_path / "nope.json", required=False) is None
     with pytest.raises(ManifestError):

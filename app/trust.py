@@ -47,7 +47,10 @@ def load_manifest(path: Path) -> dict[str, str]:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise ManifestError(f"Trust manifest not found: {path}") from None
+        raise ManifestError(
+            f"Trust manifest not found: {path}. Create it with: "
+            f"python -m app.trust make-manifest <corpus_dir> <file> [<file> ...] --out {path}"
+        ) from None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ManifestError(f"Trust manifest {path} could not be read: {exc}") from exc
 

@@ -7,12 +7,19 @@ from fastapi.responses import RedirectResponse
 from app.config import settings
 from app.rag import answer_question
 from app.schemas import AskRequest, AskResponse
+from app.trust import load_manifest
 from app.vectorstore import build_index
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager for FastAPI app."""
+    """Lifespan context manager for FastAPI app.
+
+    With the "trust" defence on, a missing or invalid manifest stops startup instead of
+    failing on the first question.
+    """
+    if "trust" in settings.defences:
+        load_manifest(Path(settings.trusted_sources_path))
     if not Path(settings.persist_dir).exists():
         build_index()
     yield

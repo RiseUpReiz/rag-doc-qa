@@ -1,11 +1,11 @@
 """Run the safety and quality eval suite against the RAG pipeline.
 
 Usage (from the repo root):
-    python -m evals.run_eval
-    python -m evals.run_eval --delay 6 --only indirect_injection
-    python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks
+    python -m evals.run_eval --defences none
+    python -m evals.run_eval --defences none --delay 6 --only indirect_injection
+    python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --defences none
     python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl
-    python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --judge
+    python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --defences none --judge
     python -m evals.run_eval --cases evals/attacks/cases.jsonl --corpus evals/attacks --defences prompt
     python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl --judge --cases evals/attacks/cases.jsonl
     python -m evals.run_eval --rescore evals/reports/results-<stamp>.jsonl --judge-missing-only
@@ -13,8 +13,10 @@ Usage (from the repo root):
         --defences prompt,trust --repeat 3 --tag stage4
 
 --judge also grades each answer with the LLM judge (JUDGE_MODEL) against the case's
-expected_behavior. With --rescore, --cases re-grades saved answers against the current
-case definitions in those files instead of the ones saved with the results.
+expected_behavior. --defences is required for every run except --rescore, so a run never
+inherits the app's DEFENCES setting; pass 'none' to run with no defences. With --rescore,
+--cases re-grades saved answers against the current case definitions in those files
+instead of the ones saved with the results.
 
 --judge-missing-only (with --rescore) keeps verdicts from the current judge model and judges
 only what is missing or JUDGE_ERROR, starting from the latest rescore of the file. If the
@@ -645,8 +647,8 @@ def main() -> None:
     parser.add_argument("--trust-manifest", type=Path,
                         help="trust manifest (default: trusted_sources.json next to the corpus folder)")
     parser.add_argument("--defences",
-                        help="comma-separated defences to enable, e.g. 'prompt', or 'none'"
-                             " (default: DEFENCES from .env)")
+                        help="comma-separated defences to enable, e.g. 'prompt,trust', or 'none';"
+                             " required unless --rescore")
     parser.add_argument("--repeat", type=int, default=1, metavar="N",
                         help="run the same configuration N times, one results/report pair per run")
     parser.add_argument("--tag", help="label stored on every result row, for python -m evals.ablation")
@@ -683,8 +685,10 @@ def main() -> None:
     if args.only:
         cases = [c for c in cases if c["category"] == args.only]
 
+    if args.defences is None:
+        parser.error("--defences is required (e.g. 'prompt,trust,links', or 'none' for no defences)")
     try:
-        defences = check_defences(settings.defences if args.defences is None else args.defences)
+        defences = check_defences(args.defences)
     except (ValueError, NotImplementedError) as exc:
         parser.error(str(exc))
     print(f"Defences: {format_defences(defences)}")

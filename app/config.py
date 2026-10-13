@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     judge_provider: str = "google"
     judge_model: str | None = None
 
-    # Prompt-injection defences, e.g. DEFENCES=prompt (comma-separated; empty means none)
-    defences: Annotated[list[str], NoDecode] = []
+    # Prompt-injection defences, e.g. DEFENCES=prompt (comma-separated; "none" turns them all off)
+    defences: Annotated[list[str], NoDecode] = ["prompt", "trust", "links"]
 
     # Manifest of approved ("official") documents, used to tag chunks with a trust level at ingestion
     trusted_sources_path: str = "trusted_sources.json"

@@ -93,7 +93,7 @@ def test_main_saves_sources_and_marks_not_exercised(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "sys.argv",
         ["run_eval", "--cases", str(cases_path), "--corpus", str(tmp_path),
-         "--out", str(tmp_path / "reports"), "--delay", "0"],
+         "--out", str(tmp_path / "reports"), "--delay", "0", "--defences", "none"],
     )
 
     run_eval.main()

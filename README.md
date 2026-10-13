@@ -128,6 +128,36 @@ Settings live in `app/config.py` and can be overridden in `.env`. Options includ
 chunk size and overlap, the number of chunks retrieved per question, and the
 embedding and language model names.
 
+## Safety defences
+
+Three layers protect against prompt injection hidden in documents. All three are
+on by default.
+
+- **prompt**: a hardened system prompt that wraps retrieved chunks in tagged
+  blocks and tells the model to treat them as data, never as instructions.
+- **trust**: each chunk is tagged at ingestion as `official` or `unverified`,
+  based on a manifest of approved files and their SHA-256 hashes. The model is
+  told which sources are approved. This layer requires `prompt`.
+- **links**: links and email addresses in answers are removed unless their
+  domain is on an allowlist.
+
+Configure them in `.env`:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DEFENCES` | `prompt,trust,links` | Comma-separated layers to enable; `none` turns them all off |
+| `ALLOWED_LINK_DOMAINS` | empty | Domains the `links` layer keeps, subdomains included; empty removes every link |
+| `TRUSTED_SOURCES_PATH` | `trusted_sources.json` | Manifest used by the `trust` layer |
+
+With `trust` on, the app will not start without a manifest. Create one by
+listing the approved files in `data/`. Then delete the `storage/` folder and
+rebuild the index, so the chunks get their trust tags:
+
+```
+python -m app.trust make-manifest data sample.txt --out trusted_sources.json
+python -m app.vectorstore
+```
+
 ## Tests
 
 ```

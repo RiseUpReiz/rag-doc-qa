@@ -258,14 +258,14 @@ def test_repeat_writes_one_pair_per_run_and_tags_every_row(tmp_path, monkeypatch
 
 def test_repeat_stops_when_the_daily_quota_runs_out(tmp_path, monkeypatch):
     quota = RuntimeError("429 RESOURCE_EXHAUSTED {'quotaId': 'GenerateRequestsPerDayPerProjectPerModel'}")
-    run_main(tmp_path, monkeypatch, "--repeat", "3", "--tag", "t", answers=[quota])
+    run_main(tmp_path, monkeypatch, "--defences", "none", "--repeat", "3", "--tag", "t", answers=[quota])
     assert len(list((tmp_path / "reports").glob("results-*.jsonl"))) == 1
 
 
 @pytest.mark.parametrize("tag", ["has space", "a/b", "x;y"])
 def test_bad_tags_are_rejected(tag, tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
-        run_main(tmp_path, monkeypatch, "--tag", tag)
+        run_main(tmp_path, monkeypatch, "--defences", "none", "--tag", tag)
 
 
 def test_rescore_keeps_tag_and_records_rescored_from(tmp_path, reports):

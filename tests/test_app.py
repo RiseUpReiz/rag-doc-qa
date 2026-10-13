@@ -1,9 +1,11 @@
+import pytest
 from langchain_core.documents import Document
 from fastapi.testclient import TestClient
 
 from app.ingest import chunk_documents
 from app.rag import extract_text
 from app.main import app
+from app.trust import ManifestError
 
 client = TestClient(app)
 
@@ -42,3 +44,11 @@ def test_ask_returns_answers_and_sources(monkeypatch):
 def test_ask_rejects_empty_question():
     response = client.post("/ask", json={"question": ""})
     assert response.status_code == 422
+
+def test_startup_with_trust_and_no_manifest_says_how_to_create_it(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.main.settings.defences", ["prompt", "trust", "links"])
+    monkeypatch.setattr("app.main.settings.trusted_sources_path", str(tmp_path / "trusted_sources.json"))
+    monkeypatch.setattr("app.main.build_index", lambda: pytest.fail("index built before the manifest check"))
+    with pytest.raises(ManifestError, match="make-manifest"):
+        with TestClient(app):
+            pass
