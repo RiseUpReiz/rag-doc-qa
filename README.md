@@ -158,6 +158,10 @@ python -m app.trust make-manifest data sample.txt --out trusted_sources.json
 python -m app.vectorstore
 ```
 
+The index is not rebuilt automatically. After changing the manifest or any
+document in `data/`, delete `storage/` and rebuild the index with
+`python -m app.vectorstore`, or trust tags will be missing or out of date.
+
 ## Tests
 
 ```
